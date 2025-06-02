@@ -1,0 +1,294 @@
+name: Snyk
+
+on:
+  workflow_call:
+    inputs:
+      dotnet-version:
+        description: "Passed to actions/setup-dotnet"
+        required: false
+        default: "6"
+        type: string
+      java-version:
+        description: "Passed to actions/setup-java"
+        required: false
+        default: "11"
+        type: string
+      go-version:
+        description: "Passed to actions/setup-go"
+        required: false
+        default: "1.22"
+        type: string
+      node-version:
+        description: "Passed to actions/setup-node"
+        required: false
+        default: "16"
+        type: string
+      python-version:
+        description: "Passed to actions/setup-python"
+        required: false
+        default: "3.10"
+        type: string
+      snyk-version:
+        description: "Passed to snyk/actions/setup"
+        required: false
+        default: "v1.1292.0"
+        type: string
+      additional-arguments:
+        description: "Pass in Snyk CLI additional arguements here."
+        required: false
+        default: ""
+        type: string
+      pre-scan-commands:
+        description: "Commands to execute to prepare Snyk for scanning"
+        required: false
+        default: ""
+        type: string
+      runner:
+        description: "Desired runner to execute on"
+        required: false
+        default: "ubuntu-22.04-2cpu-8ram-75ssd"
+        type: string
+      dotnet-install-dir:
+        description: "Dotnet Installation Dir"
+        required: false
+        default: "/usr/share/dotnet/"
+        type: string
+jobs:
+  monitor:
+    # Prevent triggering by bots and on non-main branch
+    if: (github.actor != 'dependabot[bot]')
+    runs-on:
+      labels: ${{ inputs.runner }}
+    permissions:
+      contents: read # to be able to publish a GitHub release
+      id-token: write # to enable use of OIDC for npm provenance
+    env:
+      DOTNET_INSTALL_DIR: ${{ inputs.dotnet-install-dir }}
+      CONTACT_MESSAGE: "If you have any questions, please contact ProdSec"
+    steps:
+      - name: "Check if GHA Scan is Required"
+        id: check-scan-required
+        env:
+          SIGNAL_HANDLER_TOKEN: "${{ secrets.SIGNAL_HANDLER_TOKEN }}"
+          SIGNAL_HANDLER_DOMAIN: "${{ secrets.SIGNAL_HANDLER_DOMAIN }}"
+        run: |
+          # Function to check if the scan is required
+          check_if_scan_required() {
+          local ENDPOINT="https://${SIGNAL_HANDLER_DOMAIN}/scan-service/require-sca-gha"
+
+          local PAYLOAD='{
+            "repository_name": "'$GITHUB_REPOSITORY'"
+          }'
+
+          local HEADERS=(
+            '-H' "X-API-Key: ${SIGNAL_HANDLER_TOKEN}"
+            '-H' "Content-Type: application/json"
+          )
+            
+          echo "Checking if the scan is required..."
+
+          local RESPONSE
+          local STATUS_CODE
+
+          set +e # Don't exit on error
+          RESPONSE=$(curl -s -m 60 -X POST "${HEADERS[@]}" -d "$PAYLOAD" "$ENDPOINT")
+          STATUS_CODE=$?
+          set -e # Re-enable exit on error
+
+          if [ $STATUS_CODE -ne 0 ]; then
+            echo "[x] Scan-service - Check failed. Proceeding with scan."
+            echo "scan_required=true" >> $GITHUB_OUTPUT
+            return 0
+          fi
+
+          # Parse the JSON response to get needs_scan value
+          if echo "$RESPONSE" | grep -q '"needs_scan":false'; then
+            NEEDS_SCAN="false"
+          else
+            NEEDS_SCAN="true"
+          fi
+
+          echo "scan_required=$NEEDS_SCAN" >> $GITHUB_OUTPUT
+      
+          if [ "$NEEDS_SCAN" = "false" ]; then
+            # GitHub Actions annotation does not support Markdown, use job summary instead
+            # https://github.com/orgs/community/discussions/72821
+            echo "::notice::Scan not required."
+            echo "### Scan Not Required - Skipped ⏭️" >> $GITHUB_STEP_SUMMARY
+            echo "${CONTACT_MESSAGE}" >> $GITHUB_STEP_SUMMARY
+            echo "[i] This scan is not required according to scan-service;
+            Skipping scan."
+            echo "job_result=skipped" >> $GITHUB_OUTPUT
+          else
+            echo "[i] This scan is required. Proceeding with scan."
+          fi
+
+          }
+
+          check_if_scan_required
+      - uses: actions/checkout@v4
+        # GitHub lacks a way to early-exit the job
+        # https://github.com/orgs/community/discussions/82744
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+      - uses: actions/setup-dotnet@v4
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+        with:
+          dotnet-version: "${{ inputs.dotnet-version }}"
+      - uses: actions/setup-java@v4
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+        with:
+          java-version: "${{ inputs.java-version }}"
+          distribution: "corretto"
+      - uses: actions/setup-go@v5
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+        with:
+          go-version: "${{ inputs.go-version }}"
+          cache: false
+      - uses: actions/setup-node@v4
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+        with:
+          node-version: "${{ inputs.node-version }}"
+      - uses: actions/setup-python@v5
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+        with:
+          python-version: "${{ inputs.python-version }}"
+      - uses: snyk/actions/setup@0.4.0
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+        with:
+          snyk-version: "${{ inputs.snyk-version }}"
+          
+      - name: "Install lerna & yarn"
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+        run: npm install -g lerna yarn
+
+      - name: "Install poetry & pipenv"
+        if: steps.check-scan-required.outputs.scan_required == 'true'
+        run: pip3 install poetry pipenv
+
+      - name: "Pre-scan commands"
+        id: pre-scan-command
+        if: ${{ steps.check-scan-required.outputs.scan_required == 'true' && inputs['pre-scan-commands'] != '' }}
+        run: ${{ inputs['pre-scan-commands'] }}
+
+      - name: "Handle Missing Lockfiles"
+        id: handle-missing-manifests
+        if: ${{ steps.check-scan-required.outputs.scan_required == 'true' && inputs['pre-scan-commands'] == '' }}
+        run: |
+          # Handling: NodeJs (Not Yarn Workspaces)
+          # Check if there's a package.json in the root directory.
+          if [ -f package.json ]; then
+            # If the package.json contains a "workspaces" field, skip the entire process.
+            if grep -q '"workspaces"' package.json; then
+              echo "[i] Yarn workspaces detected in root package.json. Skipping installation."
+              exit 0
+            fi
+          fi
+
+          # If not a yarn-workspace project, find and process all package.json files.
+          find . -name package.json | while read -r file; do
+            dir=$(dirname "$file")
+            if [ ! -f "$dir/package-lock.json" ]; then
+              echo "[i] No package-lock.json found in $dir. Running npm install --package-lock-only --ignore-scripts."
+              (cd "$dir" && npm install --package-lock-only --ignore-scripts)
+            else
+              echo "[i] package-lock.json already exists in $dir. Skipping."
+            fi
+          done
+          
+      - name: "Scan using Snyk CLI"
+        continue-on-error: true
+        if: ${{ steps.check-scan-required.outputs.scan_required == 'true' && steps.configure-npm.outcome != 'failure' && steps.pre-scan-command.outcome != 'failure' }}
+        id: snyk-cli
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }} # This token is org-wide and writes to a project called CICD-Protected.
+          SNYK_DISABLE_ANALYTICS: 1
+        run: |          
+          EXCLUDE_DIRS=(
+            "aperture_dir"
+            "Example"
+            "example"
+            "Examples"
+            "examples"
+            "project.json"
+            "sample"
+            "samples"
+            "test"
+            "tests"
+            ".buildkite"
+            ".circleci"
+            ".github"
+            ".semgrep"
+            ".vscode"
+            ".yarn"
+          )
+
+          join_with() {
+            local IFS="$1"; shift; echo "$*";
+          }
+
+          DEFAULT_ARGS=(
+            "--target-reference=${GITHUB_REF_NAME}"
+            "--remote-repo-url=https://github.com/${GITHUB_REPOSITORY}.git"
+            "--exclude=$(join_with ',' ${EXCLUDE_DIRS[@]})"
+            "--detection-depth=20"
+            "--project-lifecycle=production"
+            "--strict-out-of-sync=false"
+            "--all-projects"
+          )
+
+          set +e # by default github-actions sets set -e
+          snyk monitor "${DEFAULT_ARGS[@]}" '${{ inputs.additional-arguments }}'
+
+          RESULT=$?
+
+          if [[ $RESULT == "0" ]]; then
+            echo "[i] Scan Successful."
+            echo "### Scan Completed Successfully ✅" >> $GITHUB_STEP_SUMMARY
+          elif [[ $RESULT == "3" ]]; then
+            echo "::warning::Scan completed but no manifests were found."
+            echo "### Scan Completed - No Manifests Found ⚠️" >> $GITHUB_STEP_SUMMARY
+            echo "${CONTACT_MESSAGE}" >> $GITHUB_STEP_SUMMARY
+            echo "[i] Scan Successful - No manifests were found."
+          else
+            echo "::error::Snyk scan failed with exit code $RESULT."
+            echo "### Scan Failed - Error Detected ❌" >> $GITHUB_STEP_SUMMARY
+            echo "${CONTACT_MESSAGE}" >> $GITHUB_STEP_SUMMARY            
+            echo "[x] Status: $RESULT - Error detected."
+            exit -1
+          fi
+      
+      - name: "Set output based on the job outcome"
+        id: set-output
+        if: success() || failure()
+        run: |
+          if [ "${{ steps.check-scan-required.outputs.scan_required }}" = "false" ]; then
+            echo "job_result=skipped" >> $GITHUB_OUTPUT
+            echo "[i] Job marked as skipped because scan was not required."
+          else
+            case "${{ steps.snyk-cli.outcome }}" in
+              "success")
+                echo "job_result=success" >> $GITHUB_OUTPUT
+                ;;
+              "failure")
+                echo "job_result=failure" >> $GITHUB_OUTPUT
+                ;;
+              "skipped")
+                echo "job_result=skipped" >> $GITHUB_OUTPUT
+                ;;
+              *)
+                echo "job_result=unknown" >> $GITHUB_OUTPUT
+                ;;
+            esac
+          fi
+    outputs:
+      job_result: ${{ steps.set-output.outputs.job_result }}
+
+  send_telemetry:
+      needs: monitor
+      if: ${{ needs.monitor.outputs.job_result == 'success' }}
+      uses: auth0/devsecops-tooling/.github/workflows/scan-log.yml@master
+      with:
+        tool: snyk
+        runner: ${{ inputs.runner }}
+      secrets: inherit
+      

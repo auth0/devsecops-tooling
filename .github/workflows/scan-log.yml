@@ -1,0 +1,84 @@
+name: ScanLog
+
+on:
+  workflow_call:
+    inputs:
+      tool:
+        description: "This input describes the tool used to scan the repository."
+        required: true
+        type: string
+        default: ""
+      runner:
+        description: "Desired runner to execute on."
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  send_telemetry:
+    runs-on: 
+      labels: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: "On successful scan, send telemetry to ScanLog."
+        env:
+          SCA_TOOL: "${{ inputs.tool }}"
+          SIGNAL_HANDLER_TOKEN: "${{ secrets.SIGNAL_HANDLER_TOKEN }}"
+          SIGNAL_HANDLER_DOMAIN: "${{ secrets.SIGNAL_HANDLER_DOMAIN }}"
+        run: |
+
+          PROJECT_DIR="${GITHUB_WORKSPACE}";
+          TARGET_VERSION="${GITHUB_REF_NAME:-master}";
+          BUILD_SYSTEM="${BUILD_SYSTEM:-github_action}";
+          SCAN_OWNER="${SCAN_OWNER:-eng}";
+
+          if [ "${{ inputs.tool }}" != "semgrep" ] && [ "${{ inputs.tool }}" != "snyk" ]; then
+            echo "[x] This tool is not supported."
+            exit -1;
+          fi
+
+          if [ "${{ inputs.tool }}" == "semgrep" ]; then
+            export SCAN_TYPE="sast"
+          else
+            export SCAN_TYPE="sca"
+          fi
+
+          pushd "${PROJECT_DIR}" || exit 7
+
+          report_scan_completed() {
+            local ENDPOINT="https://${SIGNAL_HANDLER_DOMAIN}/scan";
+            local PROJECT_NAME
+            local ORG_REPO_NAME
+            local PAYLOAD
+
+            WORKFLOW_RUN="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
+            
+            PAYLOAD='{
+            "repository_name": "'$GITHUB_REPOSITORY'",
+            "project_name": "'$PROJECT_NAME'",
+            "project_version" : "'$TARGET_VERSION'",
+            "type": "'$SCAN_TYPE'",
+            "commit_hash": "'$GITHUB_SHA'",
+            "source": "'$SCAN_OWNER'",
+            "build-system": "'$BUILD_SYSTEM'",
+            "build-link": "'$WORKFLOW_RUN'",
+            "scanner": "'$SCA_TOOL'"
+            }'
+
+            local HEADERS=(
+                '-H' "x-api-key: ${SIGNAL_HANDLER_TOKEN}"
+                '-H' "Content-Type: application/json"
+            )
+
+            echo "[i] Sending scan telemetry to endpoint."
+            { STATUS_CODE=$(curl -X PUT --silent --output /dev/stderr --write-out "%{http_code}" -m 60 "${HEADERS[@]}" "${ENDPOINT}" -d "${PAYLOAD}"); } 2>&1;
+
+            if test $STATUS_CODE -ne 200; then
+              echo
+              echo '[x] Failed to submit scan telemetry.';
+              exit -1
+            fi
+          }
+
+          report_scan_completed

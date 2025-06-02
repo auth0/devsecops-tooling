@@ -1,0 +1,251 @@
+name: "SCA"
+description: "Conduct Okta approved SCA Scanning"
+author: "devsecops@okta.com"
+
+inputs:
+  additional-arguments:
+    description: "Pass in Snyk CLI additional arguements here."
+    required: false
+
+  all-projects:
+    description: "Scan all manifests in detection-depth."
+    required: false
+    default: true
+
+  send-telemetry:
+    description: "Send ScanLog telemetry on success."
+    default: 'true'
+    required: false
+    
+  SNYK_TOKEN:
+    description: "Used to authenticate Snyk scans"
+    required: true
+    type: string
+
+  SIGNAL_HANDLER_DOMAIN:
+    description: "Used to submit scan event telemetry"
+    required: true
+    type: string
+
+  SIGNAL_HANDLER_TOKEN:
+    description: "Used to submit scan event telemetry"
+    required: true
+    type: string
+
+outputs:
+  scan_required:
+    description: "Indicates if a scan is required for this repository"
+    value: ${{ steps.check-scan-required.outputs.scan_required }}
+  job_result:
+    description: "Result of the scan job (success, failure, skipped)"
+    value: ${{ steps.set-output.outputs.job_result }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Check if Scan is Required"
+      id: check-scan-required
+      shell: bash
+      env:
+        SIGNAL_HANDLER_TOKEN: "${{ inputs.SIGNAL_HANDLER_TOKEN }}"
+        SIGNAL_HANDLER_DOMAIN: "${{ inputs.SIGNAL_HANDLER_DOMAIN }}"
+        CONTACT_MESSAGE: "If you have any questions, please contact ProdSec"
+      run: |
+        # Function to check if the scan is required
+        check_if_scan_required() {
+          local ENDPOINT="https://${SIGNAL_HANDLER_DOMAIN}/scan-service/require-sca-gha"
+
+          local PAYLOAD='{
+            "repository_name": "'$GITHUB_REPOSITORY'"
+          }'
+
+          local HEADERS=(
+            '-H' "X-API-Key: ${SIGNAL_HANDLER_TOKEN}"
+            '-H' "Content-Type: application/json"
+          )
+            
+          echo "Checking if the scan is required..."
+
+          local RESPONSE
+          local STATUS_CODE
+
+          set +e # Don't exit on error
+          RESPONSE=$(curl -s -m 60 -X POST "${HEADERS[@]}" -d "$PAYLOAD" "$ENDPOINT")
+          STATUS_CODE=$?
+          set -e # Re-enable exit on error
+
+          if [ $STATUS_CODE -ne 0 ]; then
+            echo "[x] Scan-service - Check failed. Proceeding with scan."
+            echo "scan_required=true" >> $GITHUB_OUTPUT
+            return 0
+          fi
+
+          # Parse the JSON response to get needs_scan value
+          if echo "$RESPONSE" | grep -q '"needs_scan":false'; then
+            NEEDS_SCAN="false"
+          else
+            NEEDS_SCAN="true"
+          fi
+
+          echo "scan_required=$NEEDS_SCAN" >> $GITHUB_OUTPUT
+      
+          if [ "$NEEDS_SCAN" = "false" ]; then
+            # GitHub Actions annotation does not support Markdown, use job summary instead
+            # https://github.com/orgs/community/discussions/72821
+            echo "::notice::Scan not required."
+            echo "### Scan Not Required - Skipped ⏭️" >> $GITHUB_STEP_SUMMARY
+            echo "${CONTACT_MESSAGE}" >> $GITHUB_STEP_SUMMARY
+            echo "[i] This scan is not required according to scan-service;
+            Skipping scan."
+            echo "job_result=skipped" >> $GITHUB_OUTPUT
+          else
+            echo "[i] This scan is required. Proceeding with scan."
+          fi
+        }
+
+        check_if_scan_required
+
+    - name: Setup
+      uses: snyk/actions/setup@0.4.0
+      if: steps.check-scan-required.outputs.scan_required == 'true'
+    
+    - name: Scan
+      id: scan
+      shell: bash
+      if: steps.check-scan-required.outputs.scan_required == 'true'
+      env:
+        SNYK_TOKEN: ${{ inputs.SNYK_TOKEN }}
+      run: |
+          EXCLUDE_DIRS=(
+            "aperture_dir"
+            "Example"
+            "example"
+            "Examples"
+            "examples"
+            "project.json"
+            "rex-blackduck"
+            "robo-warrior"
+            "sample"
+            "samples"
+            "test"
+            "tests"
+            ".buildkite"
+            ".circleci"
+            ".github"
+            ".semgrep"
+            ".vscode"
+            ".yarn"
+          )
+
+          join_with() {
+            local IFS="$1"; shift; echo "$*";
+          }
+
+          # Check if all-projects flag is needed
+          ALL_PROJECTS_FLAG=""
+          if [[ "${{ inputs.all-projects }}" == "true" ]]; then
+            ALL_PROJECTS_FLAG="--all-projects --exclude=$(join_with ',' "${EXCLUDE_DIRS[@]}")"
+          fi
+          
+          DEFAULT_ARGS=(
+            "--target-reference=${GITHUB_REF_NAME}"
+            "--remote-repo-url=https://github.com/${GITHUB_REPOSITORY}.git"
+            "--detection-depth=20"
+            "--project-lifecycle=production"
+            "--strict-out-of-sync=false"
+            "$ALL_PROJECTS_FLAG"
+          )
+
+          set +e # by default github-actions sets set -e
+          
+          snyk monitor "${DEFAULT_ARGS[@]}" '${{ inputs.additional-arguments }}'
+
+          RESULT=$?
+
+          if [[ $RESULT == "0" ]]; then
+            echo "[i] Scan Successful."
+          elif [[ $RESULT == "3" ]]; then
+            echo "::warning::Scan completed but no manifests were found."
+            echo "### Scan Completed - No Manifests Found ⚠️" >> $GITHUB_STEP_SUMMARY
+            echo "${CONTACT_MESSAGE}" >> $GITHUB_STEP_SUMMARY
+            echo "[i] Scan Successful - No manifests were found."
+          else
+            echo "::error::Snyk scan failed with exit code $RESULT."
+            echo "### Scan Failed - Error Detected ❌" >> $GITHUB_STEP_SUMMARY
+            echo "${CONTACT_MESSAGE}" >> $GITHUB_STEP_SUMMARY
+            echo "[x] Status: $RESULT - Error detected."
+            exit 1
+          fi
+    
+    - name: "Set output based on the job outcome"
+      id: set-output
+      shell: bash
+      run: |
+        if [ "${{ steps.check-scan-required.outputs.scan_required }}" = "false" ]; then
+          echo "job_result=skipped" >> $GITHUB_OUTPUT
+          echo "[i] Job marked as skipped because scan was not required."
+        else
+          # Check the outcome of the scan step
+          if [ "${{ steps.scan.outcome }}" = "success" ]; then
+            echo "job_result=success" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.scan.outcome }}" = "skipped" ]; then
+            echo "job_result=skipped" >> $GITHUB_OUTPUT
+          else
+            echo "job_result=failure" >> $GITHUB_OUTPUT
+          fi
+        fi
+          
+    - name: Telemetry
+      shell: bash
+      if: ${{ inputs.send-telemetry == 'true' && steps.set-output.outputs.job_result == 'success' }}
+      env:
+        SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
+        SIGNAL_HANDLER_DOMAIN: "${{ inputs.SIGNAL_HANDLER_DOMAIN }}"
+      run: |
+          report_scan_completed() {
+            PROJECT_DIR="${GITHUB_WORKSPACE}";
+            TARGET_VERSION=${GITHUB_REF_NAME:-master};
+            BUILD_SYSTEM=${BUILD_SYSTEM:-github_action};
+            SCAN_OWNER=${SCAN_OWNER:-eng};
+
+            SCAN_TYPE="sca"
+            SCA_TOOL="snyk"
+
+            pushd "${PROJECT_DIR}" || exit 7
+
+            local ENDPOINT="https://${SIGNAL_HANDLER_DOMAIN}/scan";
+            local PROJECT_NAME
+            local ORG_REPO_NAME
+            local PAYLOAD
+
+            WORKFLOW_RUN="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
+            
+            PAYLOAD='{
+            "repository_name": "'$GITHUB_REPOSITORY'",
+            "project_name": "'$PROJECT_NAME'",
+            "project_version" : "'$TARGET_VERSION'",
+            "type": "'$SCAN_TYPE'",
+            "commit_hash": "'$GITHUB_SHA'",
+            "source": "'$SCAN_OWNER'",
+            "build-system": "'$BUILD_SYSTEM'",
+            "build-link": "'$WORKFLOW_RUN'",
+            "scanner": "'$SCA_TOOL'"
+            }'
+
+            local HEADERS=(
+                '-H' "x-api-key: ${SIGNAL_HANDLER_TOKEN}"
+                '-H' "Content-Type: application/json"
+            )
+
+            echo "[i] Sending scan telemetry to endpoint."
+            { STATUS_CODE=$(curl -X PUT --silent --output /dev/stderr --write-out "%{http_code}" -m 60 "${HEADERS[@]}" "${ENDPOINT}" -d "${PAYLOAD}"); } 2>&1;
+
+            if test "$STATUS_CODE" -ne 200; then
+              echo
+              echo '[x] Failed to submit scan telemetry.';
+              exit 1
+            fi
+          }
+
+          report_scan_completed
