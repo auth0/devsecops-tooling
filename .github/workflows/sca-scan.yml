@@ -286,7 +286,7 @@ jobs:
   send_telemetry:
       needs: monitor
       if: ${{ needs.monitor.outputs.job_result == 'success' }}
-      uses: auth0/devsecops-tooling/.github/workflows/scan-log.yml@master
+      uses: auth0/devsecops-tooling/.github/workflows/scan-log.yml@main
       with:
         tool: snyk
         runner: ${{ inputs.runner }}
