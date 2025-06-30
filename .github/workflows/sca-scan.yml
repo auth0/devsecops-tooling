@@ -46,7 +46,7 @@ on:
       runner:
         description: "Desired runner to execute on"
         required: false
-        default: "ubuntu-22.04-2cpu-8ram-75ssd"
+        default: "ubuntu-latest"
         type: string
       dotnet-install-dir:
         description: "Dotnet Installation Dir"
