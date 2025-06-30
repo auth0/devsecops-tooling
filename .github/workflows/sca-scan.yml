@@ -61,7 +61,6 @@ jobs:
       labels: ${{ inputs.runner }}
     permissions:
       contents: read # to be able to publish a GitHub release
-      id-token: write # to enable use of OIDC for npm provenance
     env:
       DOTNET_INSTALL_DIR: ${{ inputs.dotnet-install-dir }}
       CONTACT_MESSAGE: "If you have any questions, please contact ProdSec"
