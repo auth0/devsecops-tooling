@@ -1,7 +1,9 @@
 name: test
 
 on:
-  pull_request: {}
+  pull_request_target:
+    branches:
+      - main
 jobs:
   snyk-cli:
     uses: auth0/devsecops-tooling/.github/workflows/sca-scan.yml@main
