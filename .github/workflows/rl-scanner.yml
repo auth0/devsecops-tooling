@@ -26,6 +26,9 @@ on:
       SIGNAL_HANDLER_TOKEN:
         description: "Used to submit scan event telemetry."
         required: true
+      SIGNAL_HANDLER_DOMAIN:
+        description: "Domain for the signal handler endpoint."
+        required: true
       PRODSEC_TOOLS_ARN:
         description: "ARN for ProdSec tools AWS role."
         required: true
@@ -57,6 +60,7 @@ jobs:
           RLSECURE_LICENSE: ${{ secrets.RLSECURE_LICENSE }}
           RLSECURE_SITE_KEY: ${{ secrets.RLSECURE_SITE_KEY }}
           SIGNAL_HANDLER_TOKEN: ${{ secrets.SIGNAL_HANDLER_TOKEN }}
+          SIGNAL_HANDLER_DOMAIN: ${{ secrets.SIGNAL_HANDLER_DOMAIN }}
           PRODSEC_TOOLS_ARN: ${{ secrets.PRODSEC_TOOLS_ARN }}
           PRODSEC_TOOLS_USER: ${{ secrets.PRODSEC_TOOLS_USER }}
           PRODSEC_TOOLS_TOKEN: ${{ secrets.PRODSEC_TOOLS_TOKEN }}

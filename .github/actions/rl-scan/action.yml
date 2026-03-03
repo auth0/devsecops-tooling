@@ -23,6 +23,10 @@ inputs:
     description: "Used to submit scan event telemetry."
     required: true
 
+  SIGNAL_HANDLER_DOMAIN:
+    description: "Domain for the signal handler endpoint."
+    required: true
+
   PRODSEC_TOOLS_ARN:
     description: "ARN for ProdSec tools AWS role."
     required: true
@@ -53,6 +57,7 @@ runs:
         RLSECURE_LICENSE: ${{ inputs.RLSECURE_LICENSE }}
         RLSECURE_SITE_KEY: ${{ inputs.RLSECURE_SITE_KEY }}
         SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
+        SIGNAL_HANDLER_DOMAIN: ${{ inputs.SIGNAL_HANDLER_DOMAIN }}
         PRODSEC_TOOLS_ARN: ${{ inputs.PRODSEC_TOOLS_ARN }}
         PRODSEC_TOOLS_USER: ${{ inputs.PRODSEC_TOOLS_USER }}
         PRODSEC_TOOLS_TOKEN: ${{ inputs.PRODSEC_TOOLS_TOKEN }}
@@ -61,6 +66,7 @@ runs:
         echo "::add-mask::${RLSECURE_LICENSE}"
         echo "::add-mask::${RLSECURE_SITE_KEY}"
         echo "::add-mask::${SIGNAL_HANDLER_TOKEN}"
+        echo "::add-mask::${SIGNAL_HANDLER_DOMAIN}"
         echo "::add-mask::${PRODSEC_TOOLS_ARN}"
         echo "::add-mask::${PRODSEC_TOOLS_USER}"
         echo "::add-mask::${PRODSEC_TOOLS_TOKEN}"
@@ -109,27 +115,50 @@ runs:
         if [ ! -f "$ARTIFACT_PATH" ]; then
           echo "Artifact not found: $ARTIFACT_PATH"
           echo "scan-status=failed" >> $GITHUB_OUTPUT
-          exit 1
-        fi
-
-        set +e
-        rl-wrapper \
-          --artifact "$ARTIFACT_PATH" \
-          --name "$REPO_NAME" \
-          --version "$ARTIFACT_VERSION" \
-          --repository "$REPO_FULL" \
-          --commit "$COMMIT_SHA" \
-          --build-env "github_actions" \
-          --suppress_output
-        EXIT_CODE=$?
-        set -e
-
-        # Check the outcome of the scanner
-        if [ $EXIT_CODE -ne 0 ]; then
-          echo "RL Scanner failed."
-          echo "scan-status=failed" >> $GITHUB_OUTPUT
-          exit 1
+          echo "exit-code=2" >> $GITHUB_OUTPUT
+          echo "error-message=CI Workflow failed, Artifact not found: $ARTIFACT_PATH" >> $GITHUB_OUTPUT
         else
-          echo "RL Scanner passed."
-          echo "scan-status=success" >> $GITHUB_OUTPUT
+          ARTIFACT_SIZE=$(stat -c%s "$ARTIFACT_PATH" 2>/dev/null || echo "unknown")
+          echo "artifact-size=${ARTIFACT_SIZE}" >> $GITHUB_OUTPUT
+
+          set +e
+          rl-wrapper \
+            --artifact "$ARTIFACT_PATH" \
+            --name "$REPO_NAME" \
+            --version "$ARTIFACT_VERSION" \
+            --repository "$REPO_FULL" \
+            --commit "$COMMIT_SHA" \
+            --build-env "github_actions" \
+            --suppress_output
+          EXIT_CODE=$?
+          set -e
+
+          # Check the outcome of the scanner
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "RL Scanner failed with exit code $EXIT_CODE."
+            echo "scan-status=failed" >> $GITHUB_OUTPUT
+            echo "exit-code=${EXIT_CODE}" >> $GITHUB_OUTPUT
+            echo "error-message=CI Workflow failed, rl-wrapper failed, artifact size: ${ARTIFACT_SIZE} bytes" >> $GITHUB_OUTPUT
+          else
+            echo "RL Scanner passed."
+            echo "scan-status=success" >> $GITHUB_OUTPUT
+          fi
         fi
+
+    - name: Send telemetry on scan failure
+      if: steps.scan.outputs.scan-status == 'failed'
+      uses: auth0/devsecops-tooling/.github/actions/send-telemetry@main
+      with:
+        scanner: "reversinglabs"
+        scan-type: "malware"
+        success: "false"
+        error-details: '{"exit_code": ${{ steps.scan.outputs.exit-code }}, "error_message": "${{ steps.scan.outputs.error-message }}"}'
+        SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
+        SIGNAL_HANDLER_DOMAIN: ${{ inputs.SIGNAL_HANDLER_DOMAIN }}
+
+    - name: Fail workflow on scan failure
+      if: steps.scan.outputs.scan-status == 'failed'
+      shell: bash
+      run: |
+        echo "RL Scanner failed. Failing the workflow."
+        exit 1
