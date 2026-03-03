@@ -1,0 +1,112 @@
+name: "Send Telemetry"
+description: "Send scan telemetry to the ScanLog signal handler."
+author: "devsecops@okta.com"
+
+inputs:
+  scanner:
+    description: "The scanner tool name."
+    required: true
+
+  scan-type:
+    description: "The type of scan performed."
+    required: true
+
+  success:
+    description: "Whether the scan succeeded ('true' or 'false'). If 'false', status='failure' is added to the payload."
+    required: false
+    default: "true"
+
+  error-details:
+    description: 'Optional error details as JSON, e.g. {"exit_code": 1, "error_message": "GHA workflow skipped"}.'
+    required: false
+    default: ""
+
+  SIGNAL_HANDLER_TOKEN:
+    description: "API key for the signal handler endpoint."
+    required: true
+
+  SIGNAL_HANDLER_DOMAIN:
+    description: "Domain for the signal handler endpoint."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Mask sensitive inputs
+      shell: bash
+      env:
+        SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
+        SIGNAL_HANDLER_DOMAIN: ${{ inputs.SIGNAL_HANDLER_DOMAIN }}
+      run: |
+        echo "::add-mask::${SIGNAL_HANDLER_TOKEN}"
+        echo "::add-mask::${SIGNAL_HANDLER_DOMAIN}"
+
+    - name: Validate scanner input
+      shell: bash
+      env:
+        SCANNER: ${{ inputs.scanner }}
+      run: |
+        SUPPORTED_SCANNERS=("semgrep" "snyk" "reversinglabs")
+        for s in "${SUPPORTED_SCANNERS[@]}"; do
+          if [ "$SCANNER" == "$s" ]; then
+            echo "[i] Scanner '${SCANNER}' is supported."
+            exit 0
+          fi
+        done
+        echo "[x] Scanner '${SCANNER}' is not supported. Supported scanners: ${SUPPORTED_SCANNERS[*]}"
+        exit 1
+
+    - name: Send scan telemetry
+      shell: bash
+      env:
+        SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
+        SIGNAL_HANDLER_DOMAIN: ${{ inputs.SIGNAL_HANDLER_DOMAIN }}
+        SCANNER: ${{ inputs.scanner }}
+        SCAN_TYPE: ${{ inputs.scan-type }}
+        SUCCESS: ${{ inputs.success }}
+        ERROR_DETAILS: ${{ inputs.error-details }}
+      run: |
+        TARGET_VERSION="${GITHUB_REF_NAME:-master}"
+        BUILD_SYSTEM="${BUILD_SYSTEM:-github_actions}"
+        SCAN_OWNER="${SCAN_OWNER:-eng}"
+
+        WORKFLOW_RUN="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
+
+        ENDPOINT="https://${SIGNAL_HANDLER_DOMAIN}/scan"
+
+        STATUS_FIELD=""
+        if [ "$SUCCESS" != "true" ]; then
+          STATUS_FIELD=',"status": "failure"'
+        fi
+
+        ERROR_DETAILS_FIELD=""
+        if [ -n "$ERROR_DETAILS" ]; then
+          ERROR_DETAILS_FIELD=',"error_details": '$ERROR_DETAILS''
+        fi
+
+        PAYLOAD='{
+          "repository_name": "'$GITHUB_REPOSITORY'",
+          "project_name": "'$PROJECT_NAME'",
+          "project_version": "'$TARGET_VERSION'",
+          "type": "'$SCAN_TYPE'",
+          "commit_hash": "'$GITHUB_SHA'",
+          "source": "'$SCAN_OWNER'",
+          "build-system": "'$BUILD_SYSTEM'",
+          "build-link": "'$WORKFLOW_RUN'",
+          "scanner": "'$SCANNER'"'$STATUS_FIELD''$ERROR_DETAILS_FIELD'
+        }'
+
+        HEADERS=(
+          '-H' "x-api-key: ${SIGNAL_HANDLER_TOKEN}"
+          '-H' "Content-Type: application/json"
+        )
+
+        echo "[i] Sending scan telemetry to endpoint."
+        { STATUS_CODE=$(curl -X PUT --silent --output /dev/stderr --write-out "%{http_code}" -m 60 "${HEADERS[@]}" "${ENDPOINT}" -d "${PAYLOAD}"); } 2>&1
+
+        if test $STATUS_CODE -ne 200; then
+          echo
+          echo '[x] Failed to submit scan telemetry.'
+          exit 1
+        fi

@@ -1,0 +1,164 @@
+name: "RL Scanner"
+description: "Conduct Okta approved RL Scanning"
+author: "devsecops@okta.com"
+
+inputs:
+  artifact-path:
+    description: "Path to the artifact to be scanned."
+    required: true
+
+  version:
+    description: "Version of the artifact."
+    required: true
+
+  RLSECURE_LICENSE:
+    description: "License key for ReversingLabs scanner."
+    required: true
+
+  RLSECURE_SITE_KEY:
+    description: "Site key for ReversingLabs scanner."
+    required: true
+
+  SIGNAL_HANDLER_TOKEN:
+    description: "Used to submit scan event telemetry."
+    required: true
+
+  SIGNAL_HANDLER_DOMAIN:
+    description: "Domain for the signal handler endpoint."
+    required: true
+
+  PRODSEC_TOOLS_ARN:
+    description: "ARN for ProdSec tools AWS role."
+    required: true
+
+  PRODSEC_TOOLS_USER:
+    description: "User for ProdSec Python tools repo."
+    required: true
+
+  PRODSEC_TOOLS_TOKEN:
+    description: "Token for ProdSec Python tools repo."
+    required: true
+
+  PRODSEC_PYTHON_TOOLS_REPO:
+    description: "URL for ProdSec Python tools repo."
+    required: true
+
+outputs:
+  scan-status:
+    description: "The outcome of the scan process."
+    value: ${{ steps.scan.outputs.scan-status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Mask sensitive inputs
+      shell: bash
+      env:
+        RLSECURE_LICENSE: ${{ inputs.RLSECURE_LICENSE }}
+        RLSECURE_SITE_KEY: ${{ inputs.RLSECURE_SITE_KEY }}
+        SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
+        SIGNAL_HANDLER_DOMAIN: ${{ inputs.SIGNAL_HANDLER_DOMAIN }}
+        PRODSEC_TOOLS_ARN: ${{ inputs.PRODSEC_TOOLS_ARN }}
+        PRODSEC_TOOLS_USER: ${{ inputs.PRODSEC_TOOLS_USER }}
+        PRODSEC_TOOLS_TOKEN: ${{ inputs.PRODSEC_TOOLS_TOKEN }}
+        PRODSEC_PYTHON_TOOLS_REPO: ${{ inputs.PRODSEC_PYTHON_TOOLS_REPO }}
+      run: |
+        echo "::add-mask::${RLSECURE_LICENSE}"
+        echo "::add-mask::${RLSECURE_SITE_KEY}"
+        echo "::add-mask::${SIGNAL_HANDLER_TOKEN}"
+        echo "::add-mask::${SIGNAL_HANDLER_DOMAIN}"
+        echo "::add-mask::${PRODSEC_TOOLS_ARN}"
+        echo "::add-mask::${PRODSEC_TOOLS_USER}"
+        echo "::add-mask::${PRODSEC_TOOLS_TOKEN}"
+        echo "::add-mask::${PRODSEC_PYTHON_TOOLS_REPO}"
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 #v6.2.0
+      with:
+        python-version: "3.10"
+
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        pip install boto3>=1.34.159 requests>=2.32.3 rl-deploy>=2.2.3.0 pip-system-certs>=4.0
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 #v6.0.0
+      with:
+        role-to-assume: ${{ inputs.PRODSEC_TOOLS_ARN }}
+        aws-region: us-east-1
+        mask-aws-account-id: true
+
+    - name: Install RL Wrapper
+      shell: bash
+      env:
+        PRODSEC_TOOLS_USER: ${{ inputs.PRODSEC_TOOLS_USER }}
+        PRODSEC_TOOLS_TOKEN: ${{ inputs.PRODSEC_TOOLS_TOKEN }}
+        PRODSEC_PYTHON_TOOLS_REPO: ${{ inputs.PRODSEC_PYTHON_TOOLS_REPO }}
+      run: |
+        pip install rl-wrapper>=1.0.0 --index-url "https://${PRODSEC_TOOLS_USER}:${PRODSEC_TOOLS_TOKEN}@${PRODSEC_PYTHON_TOOLS_REPO}"
+
+    - name: Run RL Scanner
+      id: scan
+      shell: bash
+      env:
+        RLSECURE_LICENSE: ${{ inputs.RLSECURE_LICENSE }}
+        RLSECURE_SITE_KEY: ${{ inputs.RLSECURE_SITE_KEY }}
+        SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
+        ARTIFACT_PATH: ${{ inputs.artifact-path }}
+        ARTIFACT_VERSION: ${{ inputs.version }}
+        REPO_NAME: ${{ github.event.repository.name }}
+        REPO_FULL: ${{ github.repository }}
+        COMMIT_SHA: ${{ github.sha }}
+        PYTHONUNBUFFERED: 1
+      run: |
+        if [ ! -f "$ARTIFACT_PATH" ]; then
+          echo "Artifact not found: $ARTIFACT_PATH"
+          echo "scan-status=failed" >> $GITHUB_OUTPUT
+          echo "exit-code=2" >> $GITHUB_OUTPUT
+          echo "error-message=CI Workflow failed, Artifact not found: $ARTIFACT_PATH" >> $GITHUB_OUTPUT
+        else
+          ARTIFACT_SIZE=$(stat -c%s "$ARTIFACT_PATH" 2>/dev/null || echo "unknown")
+          echo "artifact-size=${ARTIFACT_SIZE}" >> $GITHUB_OUTPUT
+
+          set +e
+          rl-wrapper \
+            --artifact "$ARTIFACT_PATH" \
+            --name "$REPO_NAME" \
+            --version "$ARTIFACT_VERSION" \
+            --repository "$REPO_FULL" \
+            --commit "$COMMIT_SHA" \
+            --build-env "github_actions" \
+            --suppress_output
+          EXIT_CODE=$?
+          set -e
+
+          # Check the outcome of the scanner
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "RL Scanner failed with exit code $EXIT_CODE."
+            echo "scan-status=failed" >> $GITHUB_OUTPUT
+            echo "exit-code=${EXIT_CODE}" >> $GITHUB_OUTPUT
+            echo "error-message=CI Workflow failed, rl-wrapper failed, artifact size: ${ARTIFACT_SIZE} bytes" >> $GITHUB_OUTPUT
+          else
+            echo "RL Scanner passed."
+            echo "scan-status=success" >> $GITHUB_OUTPUT
+          fi
+        fi
+
+    - name: Send telemetry on scan failure
+      if: steps.scan.outputs.scan-status == 'failed'
+      uses: auth0/devsecops-tooling/.github/actions/send-telemetry@main
+      with:
+        scanner: "reversinglabs"
+        scan-type: "malware"
+        success: "false"
+        error-details: '{"exit_code": ${{ steps.scan.outputs.exit-code }}, "error_message": "${{ steps.scan.outputs.error-message }}"}'
+        SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
+        SIGNAL_HANDLER_DOMAIN: ${{ inputs.SIGNAL_HANDLER_DOMAIN }}
+
+    - name: Fail workflow on scan failure
+      if: steps.scan.outputs.scan-status == 'failed'
+      shell: bash
+      run: |
+        echo "RL Scanner failed. Failing the workflow."
+        exit 1
