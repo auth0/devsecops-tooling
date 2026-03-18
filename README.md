@@ -65,6 +65,7 @@ If you already have a build workflow that produces an artifact, this option is i
           RLSECURE_LICENSE: ${{ secrets.RLSECURE_LICENSE }}
           RLSECURE_SITE_KEY: ${{ secrets.RLSECURE_SITE_KEY }}
           SIGNAL_HANDLER_TOKEN: ${{ secrets.SIGNAL_HANDLER_TOKEN }}
+          SIGNAL_HANDLER_DOMAIN: ${{ secrets.SIGNAL_HANDLER_DOMAIN }}
           PRODSEC_TOOLS_ARN: ${{ secrets.PRODSEC_TOOLS_ARN }}
           PRODSEC_TOOLS_USER: ${{ secrets.PRODSEC_TOOLS_USER }}
           PRODSEC_TOOLS_TOKEN: ${{ secrets.PRODSEC_TOOLS_TOKEN }}
