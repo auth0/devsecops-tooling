@@ -32,34 +32,13 @@ If you already have a build workflow that installs dependencies. This option is 
 ``` 
 
 
-
-## RL scan Option 1 - Reusable Workflow
-This option is intended to be a standalone integration and is implemented as its own job. It requires that the artifact to be scanned is available at the specified path.
-```
-name: RL Scan
-on:
-  push:
-    branches: ["master", "main"]
-jobs:
-  rl-scan:
-    uses: auth0/devsecops-tooling/.github/workflows/rl-scanner.yml@main
-    with:
-      artifact-path: "path/to/your/artifact"
-      version: "version of your artifact"
-    secrets: inherit
-```
-
-### Outputs
-| Output | Description |
-|--------|-------------|
-| `scan-status` | The outcome of the scan process (`success` or `failed`). |
-
-## RL scan Option 2 - Reusable Action
+## RL scan Option 1 - Reusable Action
 If you already have a build workflow that produces an artifact, this option is intended to be used as a step within the build job immediately following the artifact creation.
 ```
       - name: Run RL Scanner
         uses: auth0/devsecops-tooling/.github/actions/rl-scan@main
         with:
+          artifact-name: "name of your artifact"
           artifact-path: "path/to/your/artifact"
           version: "version of your artifact"
           RLSECURE_LICENSE: ${{ secrets.RLSECURE_LICENSE }}

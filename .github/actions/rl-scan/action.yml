@@ -7,6 +7,10 @@ inputs:
     description: "Path to the artifact to be scanned."
     required: true
 
+  artifact-name:
+    description: "Name of the artifact to be scanned."
+    required: true
+
   version:
     description: "Version of the artifact."
     required: true
@@ -105,9 +109,9 @@ runs:
         RLSECURE_LICENSE: ${{ inputs.RLSECURE_LICENSE }}
         RLSECURE_SITE_KEY: ${{ inputs.RLSECURE_SITE_KEY }}
         SIGNAL_HANDLER_TOKEN: ${{ inputs.SIGNAL_HANDLER_TOKEN }}
-        ARTIFACT_PATH: ${{ inputs.artifact-path }}
+        ARTIFACT_PATH: ${{ inputs.artifact-path }}  
+        ARTIFACT_NAME: ${{ inputs.artifact-name}}
         ARTIFACT_VERSION: ${{ inputs.version }}
-        REPO_NAME: ${{ github.event.repository.name }}
         REPO_FULL: ${{ github.repository }}
         COMMIT_SHA: ${{ github.sha }}
         PYTHONUNBUFFERED: 1
@@ -124,12 +128,12 @@ runs:
           set +e
           rl-wrapper \
             --artifact "$ARTIFACT_PATH" \
-            --name "$REPO_NAME" \
+            --name "$ARTIFACT_NAME" \
             --version "$ARTIFACT_VERSION" \
             --repository "$REPO_FULL" \
             --commit "$COMMIT_SHA" \
             --build-env "github_actions" \
-            --suppress_output
+            --suppress-output
           EXIT_CODE=$?
           set -e
 
