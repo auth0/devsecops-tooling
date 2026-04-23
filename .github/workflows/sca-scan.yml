@@ -31,12 +31,12 @@ on:
       ruby-version:
         description: "Passed to ruby/setup-ruby"
         required: false
-        default: "3.2"
+        default: "4.0"
         type: string
       php-version:
         description: "Passed to shivammathur/setup-php"
         required: false
-        default: "8.2"
+        default: "8.5"
         type: string
       snyk-version:
         description: "Passed to snyk/actions/setup"
@@ -218,8 +218,8 @@ jobs:
           find . -name composer.json | while read -r file; do
             dir=$(dirname "$file")
             if [ ! -f "$dir/composer.lock" ]; then
-              echo "[i] No composer.lock found in $dir. Running composer install --no-scripts --no-autoloader."
-              (cd "$dir" && composer install --no-scripts --no-autoloader)
+              echo "[i] No composer.lock found in $dir. Running composer install --no-scripts --no-autoloader --no-plugins --ignore-platform-reqs --no-dev."
+              (cd "$dir" && composer install --no-scripts --no-autoloader --no-plugins --ignore-platform-reqs --no-dev)
             else
               echo "[i] composer.lock already exists in $dir. Skipping."
             fi
