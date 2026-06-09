@@ -133,29 +133,29 @@ jobs:
           }
 
           check_if_scan_required
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         # GitHub lacks a way to early-exit the job
         # https://github.com/orgs/community/discussions/82744
         if: steps.check-scan-required.outputs.scan_required == 'true'
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         if: steps.check-scan-required.outputs.scan_required == 'true'
         with:
           dotnet-version: "${{ inputs.dotnet-version }}"
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
         if: steps.check-scan-required.outputs.scan_required == 'true'
         with:
           java-version: "${{ inputs.java-version }}"
           distribution: "corretto"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         if: steps.check-scan-required.outputs.scan_required == 'true'
         with:
           go-version: "${{ inputs.go-version }}"
           cache: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: steps.check-scan-required.outputs.scan_required == 'true'
         with:
           node-version: "${{ inputs.node-version }}"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         if: steps.check-scan-required.outputs.scan_required == 'true'
         with:
           python-version: "${{ inputs.python-version }}"
@@ -171,7 +171,7 @@ jobs:
         with:
           php-version: "${{ inputs.php-version }}"
           tools: composer
-      - uses: snyk/actions/setup@0.4.0
+      - uses: snyk/actions/setup@b98d498629f1c368650224d6d212bf7dfa89e4bf # 0.4.0
         if: steps.check-scan-required.outputs.scan_required == 'true'
         with:
           snyk-version: "${{ inputs.snyk-version }}"
