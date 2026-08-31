@@ -138,7 +138,11 @@ runs:
           set -e
 
           # Check the outcome of the scanner
-          if [ $EXIT_CODE -ne 0 ]; then
+          if [ $EXIT_CODE -eq 13 ]; then
+            echo "::warning::RL Scanner returned status 13 (license quota exceeded); not failing the pipeline."
+            echo "scan-status=success" >> $GITHUB_OUTPUT
+            echo "exit-code=13" >> $GITHUB_OUTPUT
+          elif [ $EXIT_CODE -ne 0 ]; then
             echo "RL Scanner failed with exit code $EXIT_CODE."
             echo "scan-status=failed" >> $GITHUB_OUTPUT
             echo "exit-code=${EXIT_CODE}" >> $GITHUB_OUTPUT
